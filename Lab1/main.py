@@ -278,7 +278,7 @@ def demo_diffent_case(demo_type,demo_diffent_type,data_type):
     show_acc_curve(acc_list,demo_diffent_type,demo_type)
 
 if __name__ == "__main__":
-    inputs , labels = generate_linear()
+    inputs , labels = generate_XOR_easy()
     #demo_diffent_case("learning_rate",[0.01,1,100],"liner")
     #demo_diffent_case("units",[2,8,32],"liner")
     #demo_diffent_case("optimizer",["gd","sgd","msgd"],"liner")
@@ -287,7 +287,7 @@ if __name__ == "__main__":
     #model set 
     model = NN(2,4,1,"sigmoid",0.5,"gd")
     #model train 
-    model.train(10000,inputs,labels)
+    model.train(30000 ,inputs,labels)
     #print model's prediction 
     predict_y = model.predict(inputs)
     model.show_result(inputs,labels,predict_y)
