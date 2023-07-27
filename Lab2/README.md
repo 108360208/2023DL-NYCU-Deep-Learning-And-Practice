@@ -1,0 +1,1 @@
+bug:儲存最佳weights時，每次要在load進來做predict，準確率都是訓練最後一次的準確率

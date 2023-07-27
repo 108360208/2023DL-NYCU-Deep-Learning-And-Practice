@@ -9,7 +9,7 @@ from torch import save
 from torch.utils.data import TensorDataset, DataLoader
 from functools import reduce
 class EEGNet(nn.Module):
-    def __init__(self, activation='leaky_relu'):    
+    def __init__(self, activation='leaky_relu',drop_out = 0.25):    
         super(EEGNet,self).__init__()
         self.firstconv = nn.Sequential(
             nn.Conv2d(1, 16, kernel_size=(1 ,51), stride=(1, 1), padding=(0, 25), bias=False),
@@ -20,17 +20,17 @@ class EEGNet(nn.Module):
             nn.BatchNorm2d(32, eps=1e-5, momentum=0.1, affine=True, track_running_stats=True),
             activation_set(activation),
             nn.AvgPool2d(kernel_size=(1,4), stride=(1,4), padding=0),
-            nn.Dropout(p=0.25)
+            nn.Dropout(p=drop_out)
         )
         self.separableConv = nn.Sequential(
             nn.Conv2d(32, 32, kernel_size=(1,15), stride=(1,1), padding=(0,7), bias=False),
             nn.BatchNorm2d(32, eps=1e-5, momentum=0.1, affine=True, track_running_stats=True),
             activation_set(activation),
             nn.AvgPool2d(kernel_size=(1,8), stride=(1,8), padding=0),
-            nn.Dropout(p=0.25)
+            nn.Dropout(p=drop_out)
         )
         self.classify = nn.Sequential(
-            nn.Linear(in_features=736, out_features=2, bias=True)
+            nn.Linear(in_features=736, out_features=1, bias=True)
         )
     def forward(self,input):
         out = self.firstconv(input)
@@ -50,7 +50,7 @@ class DeepConvNet(nn.Module):
             nn.BatchNorm2d(filters_list[0],eps=1e-5, momentum=0.1),
             activation_set(activation),
             nn.MaxPool2d((1,2)),
-            nn.Dropout(p=0.25)
+            nn.Dropout(p=0.5)
         )
 
         for idx, num_filter in enumerate(filters_list[:-1],start=1):
@@ -59,12 +59,12 @@ class DeepConvNet(nn.Module):
                 nn.BatchNorm2d(filters_list[idx]),
                 activation_set(activation),
                 nn.MaxPool2d((1,2)),
-                nn.Dropout(p=0.25)
+                nn.Dropout(p=0.5)
             )) 
         flatten_size =  filters_list[-1] * reduce(
             lambda x,_: round((x-4)/2), filters_list    , 750)
         self.classify = nn.Sequential(
-            nn.Linear(flatten_size, 2, bias=True),
+            nn.Linear(flatten_size, 1, bias=True),
         )
 
     def forward(self,input):
@@ -74,7 +74,7 @@ class DeepConvNet(nn.Module):
         out = out.view(-1, self.classify[0].in_features)
         return self.classify(out)
 def activation_set(activation):
-    if(activation == "leeky_relu"):
+    if(activation == "leaky_relu"):
         return nn.LeakyReLU(negative_slope=0.01)
     elif(activation == "relu"):
         return nn.ReLU()
@@ -100,8 +100,9 @@ def train(net_type,activations,train_loader, test_loader, num_epochs=10, learnin
         else:
             model = DeepConvNet(activation=activation,filters_list=[25,50,100,200])
         model.to(device)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        # criterion = nn.CrossEntropyLoss()
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate,weight_decay=0.01)
         best_accuracy = 0.0
 
         for epoch in range(num_epochs):
@@ -110,15 +111,17 @@ def train(net_type,activations,train_loader, test_loader, num_epochs=10, learnin
             correct = 0
             total = 0
             for i, (inputs, labels) in enumerate(train_loader):
-                inputs, labels = inputs.to(device), labels.to(device)
+                inputs, labels = inputs.to(device), labels.to(device).unsqueeze(1).float()
                 optimizer.zero_grad()
                 outputs = model.forward(inputs)
+        
                 loss = criterion(outputs, labels)
                 loss.backward()
-                optimizer.step()
-                _, predicted = torch.max(outputs.data, 1)
+                optimizer.step()             
+                predicted = (outputs > 0.5).float()
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
+
             if(epoch == 0 or (epoch+1) % 5 == 0):
                 train_accuracies.append(100 * correct / total)
             #模型評估
@@ -128,12 +131,11 @@ def train(net_type,activations,train_loader, test_loader, num_epochs=10, learnin
 
             with torch.no_grad():
                 for inputs, labels in test_loader:
-                    inputs, labels = inputs.to(device), labels.to(device)
+                    inputs, labels = inputs.to(device), labels.to(device).unsqueeze(1).float()
                     outputs = model.forward(inputs)
-                    _, predicted = torch.max(outputs.data, 1)
+                    predicted = (outputs > 0.5).float()
                     total += labels.size(0)
                     correct += (predicted == labels).sum().item()
- 
             accuracy = 100 * correct / total
             if(epoch == 0 or (epoch+1) % 5 == 0):
                 eval_accuracies.append(accuracy)
@@ -143,6 +145,8 @@ def train(net_type,activations,train_loader, test_loader, num_epochs=10, learnin
                 best_accuracy = accuracy
                 best_model = model.state_dict()
         best_models[activation]={
+            'learning_rate':learning_rate,
+            'epoch':num_epochs,
             'best_model_state_dict': best_model,
             'best_accuracy': best_accuracy,
             'train_accuracies': train_accuracies,
@@ -159,6 +163,7 @@ def predict(net_type,loaded_models,test_loader,device="cuda"):
         device = 'cuda'
     else:
         device = 'cpu'
+
     if(net_type == "eeg"):
         print("The performance of the EGGNet model with different activation functions is as follows:")
     else:
@@ -172,18 +177,19 @@ def predict(net_type,loaded_models,test_loader,device="cuda"):
         model.load_state_dict(model_key['best_model_state_dict'])
         model.to(device)
         model.eval()
-    
-        # correct = 0
-        # total = 0
+
+        correct = 0
+        total = 0
+
         # with torch.no_grad():
         #     for inputs, labels in test_loader:
-        #         inputs, labels = inputs.to(device), labels.to(device)
+        #         inputs, labels = inputs.to(device), labels.to(device).unsqueeze(1).float()
         #         outputs = model.forward(inputs)
-        #         _, predicted = torch.max(outputs.data, 1)
+        #         predicted = (outputs > 0.5).float()
         #         total += labels.size(0)
         #         correct += (predicted == labels).sum().item()
         # accuracy = 100 * correct / total
-        
+
         accuracy = model_key['best_accuracy']
         #拚錯字了，字典存的是錯的
         if (activation=='leeky_relu'):activation='leaky_relu'
@@ -232,18 +238,17 @@ if __name__ == '__main__':
 
     train_dataset = TensorDataset(torch.tensor(train_data, dtype=torch.float32), torch.tensor(train_label, dtype=torch.long)) 
     test_dataset = TensorDataset(torch.tensor(test_data, dtype=torch.float32),torch.tensor(test_label, dtype=torch.long))
-    train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
 
-    activations = ["leeky_relu","relu","elu"]
+    activations = ["leaky_relu","relu","elu"]
 
-    train("eeg",activations, train_loader, test_loader, num_epochs=150)
-    loaded_models = torch.load('eeg_best_models.pth')
-    predict("eeg",loaded_models,test_loader)
-    plt_all_acc(loaded_models)
-    train("deep",activations, train_loader, test_loader, num_epochs=150)
+    #train("deep",activations, train_loader, test_loader, num_epochs=5)
     loaded_models = torch.load('deep_best_models.pth')
     predict("deep",loaded_models,test_loader)
     plt_all_acc(loaded_models)
-
+    #train("eeg",activations, train_loader, test_loader, num_epochs=150)
+    loaded_models = torch.load('eeg_best_models.pth')
+    predict("eeg",loaded_models,test_loader)
+    plt_all_acc(loaded_models)
 
