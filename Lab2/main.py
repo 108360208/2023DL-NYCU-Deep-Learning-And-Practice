@@ -8,6 +8,7 @@ from dataloader import read_bci_data
 from torch import save
 from torch.utils.data import TensorDataset, DataLoader
 from functools import reduce
+import copy
 class EEGNet(nn.Module):
     def __init__(self, activation='leaky_relu'):    
         super(EEGNet,self).__init__()
@@ -62,7 +63,7 @@ class DeepConvNet(nn.Module):
                 nn.Dropout(p=0.25)
             )) 
         flatten_size =  filters_list[-1] * reduce(
-            lambda x,_: round((x-4)/2), filters_list    , 750)
+            lambda x,_: round((x-4)/2), filters_list , 750)
         self.classify = nn.Sequential(
             nn.Linear(flatten_size, 2, bias=True),
         )
@@ -141,7 +142,7 @@ def train(net_type,activations,train_loader, test_loader, num_epochs=10, learnin
             # 保存最佳模型的參數
             if (accuracy > best_accuracy):
                 best_accuracy = accuracy
-                best_model = model.state_dict()
+                best_model = copy.deepcopy(model.state_dict())
         best_models[activation]={
             'best_model_state_dict': best_model,
             'best_accuracy': best_accuracy,
@@ -173,18 +174,17 @@ def predict(net_type,loaded_models,test_loader,device="cuda"):
         model.to(device)
         model.eval()
     
-        # correct = 0
-        # total = 0
-        # with torch.no_grad():
-        #     for inputs, labels in test_loader:
-        #         inputs, labels = inputs.to(device), labels.to(device)
-        #         outputs = model.forward(inputs)
-        #         _, predicted = torch.max(outputs.data, 1)
-        #         total += labels.size(0)
-        #         correct += (predicted == labels).sum().item()
-        # accuracy = 100 * correct / total
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, labels in test_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model.forward(inputs)
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+        accuracy = 100 * correct / total
         
-        accuracy = model_key['best_accuracy']
         #拚錯字了，字典存的是錯的
         if (activation=='leeky_relu'):activation='leaky_relu'
         print(f'\u25CF{activation} Activation')
@@ -237,13 +237,12 @@ if __name__ == '__main__':
 
     activations = ["leeky_relu","relu","elu"]
 
-    train("eeg",activations, train_loader, test_loader, num_epochs=150)
+    train("eeg",activations, train_loader, test_loader, num_epochs=10)
     loaded_models = torch.load('eeg_best_models.pth')
     predict("eeg",loaded_models,test_loader)
     plt_all_acc(loaded_models)
-    train("deep",activations, train_loader, test_loader, num_epochs=150)
+    train("deep",activations, train_loader, test_loader, num_epochs=10)
     loaded_models = torch.load('deep_best_models.pth')
     predict("deep",loaded_models,test_loader)
     plt_all_acc(loaded_models)
-
 
