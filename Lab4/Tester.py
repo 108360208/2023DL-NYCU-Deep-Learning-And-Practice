@@ -42,7 +42,12 @@ def make_ground_truth_gif(save_root, img_tensor, idx):
 
 def Generate_PSNR(imgs1, imgs2, data_range=1.):
     """PSNR for torch tensor"""
+    import math
     mse = nn.functional.mse_loss(imgs1, imgs2) # wrong computation for batch size > 1
+    if data_range == 0 or math.isnan(data_range):
+        data_range = torch.tensor(1)
+    if mse == 0 or math.isnan(mse):
+        mse = torch.tensor(1)
     psnr = 20 * log10(data_range) - 10 * torch.log10(mse)
     return psnr
 
@@ -165,10 +170,9 @@ class Test_model(VAE_Model):
             z = torch.cuda.FloatTensor(1, self.args.N_dim, self.args.frame_H, self.args.frame_W).normal_()
             label_feat = self.label_transformation(label[i])
             human_feat_hat = self.frame_transformation(out)
-            
             parm = self.Decoder_Fusion(human_feat_hat, label_feat, z)    
             out = self.Generator(parm)
-            
+
             decoded_frame_list.append(out.cpu())
             label_list.append(label[i].cpu())
             
@@ -254,7 +258,10 @@ if __name__ == '__main__':
     parser.add_argument('--tfr',           type=float, default=1.0,  help="The initial teacher forcing ratio")
     parser.add_argument('--tfr_sde',       type=int,   default=10,   help="The epoch that teacher forcing ratio start to decay")
     parser.add_argument('--tfr_d_step',    type=float, default=0.1,  help="Decay step that teacher forcing ratio adopted")
-    parser.add_argument('--ckpt_path',     type=str,   default="epoch=0.ckpt",help="The path of your checkpoints")   
+    parser.add_argument('--ckpt_path',     type=str,   default="best.ckpt",help="The path of your checkpoints")   
+
+
+
     
     # Training Strategy
     parser.add_argument('--fast_train',         action='store_true')
