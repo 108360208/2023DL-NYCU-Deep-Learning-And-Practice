@@ -1,4 +1,6 @@
 net_weights/
 new_dataset/
 LAB4_Dataset/
-SMPLX_NEUTRAL.pkl
+
+log/
+models/

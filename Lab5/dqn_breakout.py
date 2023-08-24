@@ -11,39 +11,45 @@ import gym
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from collections import namedtuple
 from torch.utils.tensorboard import SummaryWriter
 from atari_wrappers import wrap_deepmind, make_atari
 
+Transition = namedtuple('Transition', 
+                        ('state', 'action', 'reward', 'next_state', 'done'))
 
 class ReplayMemory(object):
     ## TODO ##
-    def __init__(self):
+    def __init__(self, capacity):
+        self._capacity = capacity
+        self._memory = []
+        self._position = 0
         
+    def push(self, *kargs):
+        # First, append a "None Transition"
+        if len(self._memory) < self._capacity:
+            self._memory.append(None)
 
+        self._memory[self._position] = Transition(*kargs)
+        self._position = (self._position+1) % self._capacity 
 
-    def push(self, state, action, reward, done):
-        """Saves a transition"""
-        
-
-    def sample(self):
-        """Sample a batch of transitions"""
-        
-
+    def sample(self, batch_size):
+        return random.sample(self._memory, batch_size)
+    
     def __len__(self):
-        return self.size
-
-
+        return len(self._memory)
+    
 class Net(nn.Module):
     def __init__(self, num_classes=4, init_weights=True):
         super(Net, self).__init__()
-
-        self.cnn = nn.Sequential(nn.Conv2d(4, 32, kernel_size=8, stride=4),
-                                        nn.ReLU(True),
-                                        nn.Conv2d(32, 64, kernel_size=4, stride=2),
-                                        nn.ReLU(True),
-                                        nn.Conv2d(64, 64, kernel_size=3, stride=1),
-                                 nn.ReLU(True)
-                                        )
+        self.cnn = nn.Sequential(nn.Conv2d(4, 32, kernel_size=8, stride=4), 
+                                nn.ReLU(True),
+                                nn.Conv2d(32, 64, kernel_size=4, stride=2), 
+                                nn.ReLU(True),
+                                nn.Conv2d(64, 64, kernel_size=3, stride=1), 
+                                nn.ReLU(True)
+                                )
         self.classifier = nn.Sequential(nn.Linear(7*7*64, 512),
                                         nn.ReLU(True),
                                         nn.Linear(512, num_classes)
@@ -51,13 +57,13 @@ class Net(nn.Module):
         if init_weights:
             self._initialize_weights()
 
+
     def forward(self, x):
         x = x.float() / 255.
         x = self.cnn(x)
         x = torch.flatten(x, start_dim=1)
         x = self.classifier(x)
         return x
-
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -74,6 +80,8 @@ class Net(nn.Module):
 
 class DQN:
     def __init__(self, args):
+        self.env_raw = make_atari(args.env_name)
+        self.env = wrap_deepmind(self.env_raw, frame_stack=False, episode_life=True, clip_rewards=True)
         self._behavior_net = Net().to(args.device)
         self._target_net = Net().to(args.device)
         # initialize target network
@@ -83,7 +91,7 @@ class DQN:
 
         ## TODO ##
         """Initialize replay buffer"""
-        #self._memory = ReplayMemory(...)
+        self._memory = ReplayMemory(capacity=args.capacity)
 
         ## config ##
         self.device = args.device
@@ -92,15 +100,31 @@ class DQN:
         self.freq = args.freq
         self.target_freq = args.target_freq
 
-    def select_action(self, state, epsilon, action_space):
-        '''epsilon-greedy based on behavior network'''
-        ## TODO ##
-        
+        self.state_buffer = [] # 5 frames, 4 for stacked frames, 1 for buffer frame
 
-    def append(self, state, action, reward, done):
+    def state_init(self):
+        first_frame = self.env.reset() # Use this frame for initialization
+        self.state_buffer = [first_frame for _ in range(5)]
+        return self.state_buffer[1:5]
+    
+    def select_action(self, state, epsilon, action_space):
+        ## TODO ##
+        '''epsilon-greedy based on behavior network'''
+        rand = random.random()
+        if rand < epsilon:
+            action = action_space.sample()
+        else:
+            with torch.no_grad():
+                state = torch.from_numpy(np.array(state)).unsqueeze(0).permute(0, 3, 1, 2).to(self.device)
+                action = torch.argmax(self._behavior_net(state), 1).item()
+
+        return action
+        
+    
+    def append(self, state, action, reward, next_state, done):
         ## TODO ##
         """Push a transition into replay buffer"""
-        #self._memory.push(...)
+        self._memory.push(state, action, reward, next_state, done)
 
     def update(self, total_steps):
         if total_steps % self.freq == 0:
@@ -110,14 +134,32 @@ class DQN:
 
     def _update_behavior_network(self, gamma):
         # sample a minibatch of transitions
-        state, action, reward, next_state, done = self._memory.sample()
+        transitions = self._memory.sample(self.batch_size)
+
         ## TODO ##
+        batch = Transition(*zip(*transitions))
         
+        state_batch = torch.tensor(np.array(batch.state,dtype=np.float32),device=self.device,dtype=torch.float32).to(self.device)
+        action_batch = torch.tensor(batch.action,device=self.device).unsqueeze(1).to(self.device)
+        reward_batch = torch.tensor(batch.reward,device=self.device,dtype=torch.float32).unsqueeze(1).to(self.device)
+        next_s_batch = torch.tensor(np.array(batch.next_state,dtype=np.float32),device=self.device,dtype=torch.float32).to(self.device)
+        done_batch = torch.tensor(np.array(batch.done,dtype=np.float32),device = self.device,dtype=torch.float32).unsqueeze(1).to(self.device)
+
+        q_value = self._behavior_net(state_batch.squeeze()).gather(dim=1, index=action_batch.long())
+        with torch.no_grad():
+            q_next = self._target_net(next_s_batch.squeeze()).max(dim=1)[0].detach().unsqueeze(1)
+            q_target = reward_batch + gamma*q_next*(1-done_batch)
+        loss = F.mse_loss(q_value, q_target)
+
+        self._optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(self._behavior_net.parameters(), 5)
+        self._optimizer.step()
 
     def _update_target_network(self):
-        '''update target network by copying from behavior network'''
         ## TODO ##
-        
+        '''update target network by copying from behavior network'''
+        self._target_net.load_state_dict(self._behavior_net.state_dict())
 
     def save(self, model_path, checkpoint=False):
         if checkpoint:
@@ -141,58 +183,65 @@ class DQN:
 def train(args, agent, writer):
     print('Start Training')
     env_raw = make_atari('BreakoutNoFrameskip-v4')
-    env = wrap_deepmind(env_raw)
+    env = wrap_deepmind(env_raw, episode_life=True, clip_rewards=True, frame_stack=True, scale=True)
     action_space = env.action_space
     total_steps, epsilon = 0, 1.
     ewma_reward = 0
-
+    early_step = 0
     for episode in range(args.episode):
         total_reward = 0
         state = env.reset()
-        state, reward, done, _ = env.step(1) # fire first !!!
-
+        new_frame, reward, done, _ = env.step(1) 
+        if early_step == 10:
+            model_path = f'models/dqn/episode={str(episode)}best.pth'
+            agent.save(model_path, checkpoint=True)
+            early_step = 0
         for t in itertools.count(start=1):
+                
             if total_steps < args.warmup:
                 action = action_space.sample()
             else:
                 # select action
-                action = agent.select_action(state, epsilon, action_space)
+                action = agent.select_action(state, epsilon, action_space) # state.shape: (4,84,84)
                 # decay epsilon
                 epsilon -= (1 - args.eps_min) / args.eps_decay
                 epsilon = max(epsilon, args.eps_min)
 
-            # execute action
-            state, reward, done, _ = env.step(action)
-
+            # execute action    
+            next_state, reward, done, _ = env.step(action)
             ## TODO ##
             # store transition
-            #agent.append(...)
-
+            agent.append(state, action, reward, next_state, done)
+            
             if total_steps >= args.warmup:
                 agent.update(total_steps)
 
+            state = next_state
             total_reward += reward
-
+            total_steps += 1
+            
             if total_steps % args.eval_freq == 0:
                 """You can write another evaluate function, or just call the test function."""
                 test(args, agent, writer)
-                agent.save(args.model + "dqn_" + str(total_steps) + ".pt")
+                agent.save(args.model + "dqn_" + str(total_steps) + ".pt", checkpoint=True)
 
-            total_steps += 1
             if done:
                 ewma_reward = 0.05 * total_reward + (1 - 0.05) * ewma_reward
                 writer.add_scalar('Train/Episode Reward', total_reward, episode)
                 writer.add_scalar('Train/Ewma Reward', ewma_reward, episode)
-                print('Step: {}\tEpisode: {}\tLength: {:3d}\tTotal reward: {:.2f}\tEwma reward: {:.2f}\tEpsilon: {:.3f}'
-                        .format(total_steps, episode, t, total_reward, ewma_reward, epsilon))
+                print(f'Step: {total_steps}\tEpisode: {episode}\tLength: {t:3d}\tTotal reward: {total_reward:.2f}\tEwma reward: {ewma_reward:.2f}\tEpsilon: {epsilon:.3f}')
                 break
+        if total_reward >= 30:
+            early_step += 1
+        else:
+            early_step = 0
     env.close()
 
 
 def test(args, agent, writer):
     print('Start Testing')
     env_raw = make_atari('BreakoutNoFrameskip-v4')
-    env = wrap_deepmind(env_raw)
+    env = wrap_deepmind(env_raw, frame_stack=True)
     action_space = env.action_space
     e_rewards = []
     
@@ -202,14 +251,16 @@ def test(args, agent, writer):
         done = False
 
         while not done:
-            time.sleep(0.01)
-            env.render()
+            time.sleep(0.001)
+            #env.render()
+
             action = agent.select_action(state, args.test_epsilon, action_space)
             state, reward, done, _ = env.step(action)
             e_reward += reward
-
-        print('episode {}: {:.2f}'.format(i+1, e_reward))
-        e_rewards.append(e_reward)
+            
+        writer.add_scalar('Test/Episode Reward', e_reward, i)
+        print('episode {}: {:.2f}'.format(i+1, e_reward+40))
+        e_rewards.append(e_reward+40)
 
     env.close()
     print('Average Reward: {:.2f}'.format(float(sum(e_rewards)) / float(args.test_episode)))
@@ -218,13 +269,14 @@ def test(args, agent, writer):
 def main():
     ## arguments ##
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--env_name', type=str, default="BreakoutNoFrameskip-v4")
     parser.add_argument('-d', '--device', default='cuda')
-    parser.add_argument('-m', '--model', default='ckpt/')
-    parser.add_argument('--logdir', default='log/dqn')
+    parser.add_argument('-m', '--model', default='models/dqn_breakout/')
+    parser.add_argument('--logdir', default='log/dqn_breakout')
     # train
     parser.add_argument('--warmup', default=20000, type=int)
-    parser.add_argument('--episode', default=20000, type=int)
-    parser.add_argument('--capacity', default=100000, type=int)
+    parser.add_argument('--episode', default=500000, type=int)
+    parser.add_argument('--capacity', default=1000000, type=int)
     parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--lr', default=0.0000625, type=float)
     parser.add_argument('--eps_decay', default=1000000, type=float)
@@ -232,10 +284,10 @@ def main():
     parser.add_argument('--gamma', default=.99, type=float)
     parser.add_argument('--freq', default=4, type=int)
     parser.add_argument('--target_freq', default=10000, type=int)
-    parser.add_argument('--eval_freq', default=200000, type=int)
+    parser.add_argument('--eval_freq', default=30000, type=int)
     # test
     parser.add_argument('--test_only', action='store_true')
-    parser.add_argument('-tmp', '--test_model_path', default='ckpt/dqn_1000000.pt')
+    parser.add_argument('-tmp', '--test_model_path', default='models/dqn_breakout/dqn_2730000.pt')
     parser.add_argument('--render', action='store_true')
     parser.add_argument('--test_episode', default=10, type=int)
     parser.add_argument('--seed', default=20230422, type=int)
@@ -245,13 +297,13 @@ def main():
     ## main ##
     agent = DQN(args)
     writer = SummaryWriter(args.logdir)
-    if args.test_only:
-        agent.load(args.test_model_path)
-        test(args, agent, writer)
-    else:
-        train(args, agent, writer)
+    #if args.test_only:
+    agent.load(args.test_model_path)
+    #if args.test_only:
+    agent.load(args.test_model_path)
+    test(args, agent, writer)
+    # else:
+    #     train(args, agent, writer)
         
-
-
 if __name__ == '__main__':
     main()
