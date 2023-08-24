@@ -241,7 +241,7 @@ def train(args, agent, writer):
 def test(args, agent, writer):
     print('Start Testing')
     env_raw = make_atari('BreakoutNoFrameskip-v4')
-    env = wrap_deepmind(env_raw, frame_stack=True)
+    env = wrap_deepmind(env_raw, frame_stack=True,episode_life =False, clip_rewards =False)
     action_space = env.action_space
     e_rewards = []
     
@@ -252,15 +252,15 @@ def test(args, agent, writer):
 
         while not done:
             time.sleep(0.001)
-            #env.render()
+            env.render()
 
             action = agent.select_action(state, args.test_epsilon, action_space)
             state, reward, done, _ = env.step(action)
             e_reward += reward
             
         writer.add_scalar('Test/Episode Reward', e_reward, i)
-        print('episode {}: {:.2f}'.format(i+1, e_reward+40))
-        e_rewards.append(e_reward+40)
+        print('episode {}: {:.2f}'.format(i+1, e_reward))
+        e_rewards.append(e_reward)
 
     env.close()
     print('Average Reward: {:.2f}'.format(float(sum(e_rewards)) / float(args.test_episode)))
@@ -297,8 +297,7 @@ def main():
     ## main ##
     agent = DQN(args)
     writer = SummaryWriter(args.logdir)
-    #if args.test_only:
-    agent.load(args.test_model_path)
+
     #if args.test_only:
     agent.load(args.test_model_path)
     test(args, agent, writer)
